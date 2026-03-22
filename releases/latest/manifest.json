@@ -2,10 +2,11 @@
   "project": "AetherPanel",
   "business_end": "AI Control Host",
   "owner": "Matthew Murphy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "install": {
     "bootstrap": "/aetherpanel/install/bootstrap.sh",
     "installer": "/aetherpanel/install/aetherpanel-install.sh",
+    "host_apply": "/aetherpanel/install/aetherpanel-host-apply.sh",
     "steps": [
       "/aetherpanel/install/steps/10-preflight.sh",
       "/aetherpanel/install/steps/20-packages.sh",

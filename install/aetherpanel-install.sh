@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AETHERPANEL_VERSION="0.1.0"
+AETHERPANEL_VERSION="0.1.1"
+PROFILE="hybrid"
 NODE_NAME="$(hostname -s 2>/dev/null || hostname)"
-ROLES="controller,web,database"
+ROLES=""
 CONTROLLER_URL="https://my.net30hosting.com"
 PUBLIC_HOSTNAME=""
 PANEL_USER="aetherpanel"
@@ -26,6 +27,7 @@ INSTALL_SOURCE_ROOT="${AETHERPANEL_INSTALL_SOURCE_ROOT:-https://raw.githubuserco
 AETHERPANEL_SOURCE_DIR=""
 STEP_CACHE_DIR=""
 CROWDSEC_ENROLL_KEY=""
+PROFILE_DESCRIPTION=""
 
 usage() {
   cat <<'EOF'
@@ -35,6 +37,7 @@ Usage:
   aetherpanel-install.sh [options]
 
 Options:
+  --profile hybrid|controller|app|mail-test|dns|backup|custom
   --node-name NAME
   --roles controller,web,database
   --controller-url URL
@@ -51,6 +54,8 @@ Notes:
   - The local panel is bound to the Tailscale IPv4 by default.
   - Apache stays available for websites. lighttpd is only for the local AetherPanel UI.
   - If MariaDB/Postgres is installed here, that is for websites, not panel state.
+  - Use controller for a dedicated controller node, mail-test for the future testing mail node,
+    and hybrid for the current all-in-one baseline.
 EOF
 }
 
@@ -87,6 +92,8 @@ detect_os() {
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
+      --profile)
+        PROFILE="${2:-}"; shift 2 ;;
       --node-name)
         NODE_NAME="${2:-}"; shift 2 ;;
       --roles)
@@ -113,6 +120,46 @@ parse_args() {
         fail "Unknown option: $1" ;;
     esac
   done
+}
+
+apply_profile_defaults() {
+  case "$PROFILE" in
+    hybrid)
+      PROFILE_DESCRIPTION="Hybrid controller/app/database baseline for the current OCI production pair."
+      [ -n "$ROLES" ] || ROLES="controller,web,database"
+      ;;
+    controller)
+      PROFILE_DESCRIPTION="Dedicated controller node with the local panel and fleet/operator baseline."
+      [ -n "$ROLES" ] || ROLES="controller"
+      ;;
+    app)
+      PROFILE_DESCRIPTION="Website/application node with local site database support."
+      [ -n "$ROLES" ] || ROLES="web,database"
+      ;;
+    mail-test)
+      PROFILE_DESCRIPTION="Testing-only mail-role baseline ahead of the dedicated mail stack."
+      [ -n "$ROLES" ] || ROLES="mail"
+      ;;
+    dns)
+      PROFILE_DESCRIPTION="Tiny DNS-focused node."
+      [ -n "$ROLES" ] || ROLES="dns"
+      ;;
+    backup)
+      PROFILE_DESCRIPTION="Backup-target helper baseline for Wasabi-facing backup jobs."
+      [ -n "$ROLES" ] || ROLES="backup"
+      ;;
+    custom)
+      [ -n "$ROLES" ] || fail "--profile custom requires --roles"
+      PROFILE_DESCRIPTION="Custom role mix."
+      ;;
+    *)
+      fail "Unknown profile: $PROFILE"
+      ;;
+  esac
+}
+
+has_role() {
+  printf ',%s,' "$ROLES" | grep -q ",$1,"
 }
 
 detect_tailscale_ip() {
@@ -177,12 +224,36 @@ install_tailscale_repo() {
 }
 
 install_packages() {
+  local packages=(
+    apache2-utils
+    ca-certificates
+    certbot
+    crowdsec
+    curl
+    fail2ban
+    gnupg
+    jq
+    lighttpd
+    msmtp-mta
+    php-cli
+    php-curl
+    php-fpm
+    php-mbstring
+    php-xml
+    php-zip
+    tailscale
+  )
+
+  if has_role web || has_role controller; then
+    packages+=(apache2)
+  fi
+
   log "Installing host baseline packages"
   run_cmd "apt-get update -y"
   run_cmd "apt-get install -y ca-certificates curl jq gnupg"
   install_tailscale_repo
   run_cmd "apt-get update -y"
-  run_cmd "apt-get install -y lighttpd apache2 apache2-utils msmtp-mta certbot fail2ban crowdsec tailscale php-fpm php-cli php-curl php-mbstring php-xml php-zip"
+  run_cmd "apt-get install -y ${packages[*]}"
 }
 
 ensure_user_group() {
@@ -199,6 +270,7 @@ ensure_dirs() {
 write_node_env() {
   cat <<EOF >/tmp/aetherpanel-node.env
 AETHERPANEL_VERSION=${AETHERPANEL_VERSION}
+PROFILE=${PROFILE}
 NODE_NAME=${NODE_NAME}
 ROLES=${ROLES}
 CONTROLLER_URL=${CONTROLLER_URL}
@@ -464,6 +536,72 @@ ensure_tailscale_connected() {
   run_cmd "tailscale up"
 }
 
+configure_fail2ban() {
+  cat <<EOF >/tmp/aetherpanel-fail2ban.local
+[sshd]
+enabled = true
+backend = systemd
+maxretry = 5
+bantime = 1h
+findtime = 10m
+EOF
+
+  if has_role web || has_role controller; then
+    cat <<'EOF' >>/tmp/aetherpanel-fail2ban.local
+
+[apache-auth]
+enabled = true
+port = http,https
+logpath = /var/log/apache2/*error.log
+maxretry = 6
+
+[apache-badbots]
+enabled = true
+port = http,https
+logpath = /var/log/apache2/*access.log
+maxretry = 2
+EOF
+  fi
+
+  run_cmd "install -d -m 0755 /etc/fail2ban/jail.d"
+  run_cmd "install -m 0644 /tmp/aetherpanel-fail2ban.local /etc/fail2ban/jail.d/aetherpanel.local"
+}
+
+configure_crowdsec_local() {
+  run_cmd "install -d -m 0755 /etc/crowdsec/acquis.d"
+
+  cat <<EOF >/tmp/aetherpanel-crowdsec.yaml
+filenames:
+  - /var/log/auth.log
+labels:
+  type: syslog
+EOF
+
+  if has_role web || has_role controller; then
+    cat <<'EOF' >>/tmp/aetherpanel-crowdsec.yaml
+---
+filenames:
+  - /var/log/apache2/access.log
+labels:
+  type: apache2
+---
+filenames:
+  - /var/log/apache2/error.log
+labels:
+  type: apache2
+EOF
+  fi
+
+  run_cmd "install -m 0644 /tmp/aetherpanel-crowdsec.yaml /etc/crowdsec/acquis.d/aetherpanel.yaml"
+
+  if command -v cscli >/dev/null 2>&1; then
+    run_cmd "cscli collections install crowdsecurity/sshd || true"
+    if has_role web || has_role controller; then
+      run_cmd "cscli collections install crowdsecurity/apache2 || true"
+    fi
+  fi
+}
+
 sync_ui_tree() {
   run_cmd "rm -rf '$PANEL_APP'"
   run_cmd "install -d -m 0750 -o $PANEL_USER -g $PANEL_GROUP '$PANEL_APP'"
@@ -494,7 +632,9 @@ write_lighttpd_config() {
 
 enable_services() {
   run_cmd "systemctl enable --now lighttpd"
-  run_cmd "systemctl enable apache2"
+  if has_role web || has_role controller; then
+    run_cmd "systemctl enable --now apache2"
+  fi
   run_cmd "systemctl enable --now fail2ban"
   run_cmd "systemctl enable --now crowdsec"
 }
@@ -545,6 +685,7 @@ print_summary() {
 AetherPanel bootstrap complete.
 
 Node:          ${NODE_NAME}
+Profile:       ${PROFILE}
 Roles:         ${ROLES}
 Tailnet bind:  http://${TAILSCALE_IP}:${PANEL_PORT}
 Controller:    ${CONTROLLER_URL}
@@ -557,13 +698,16 @@ Node config:   ${PANEL_ETC}/node.env
 
 Remember:
 - lighttpd is for the local AetherPanel UI
-- Apache stays for websites
+- Apache only installs when the profile carries the web or controller role
 - host MariaDB/Postgres is for websites, not panel state
+
+${PROFILE_DESCRIPTION}
 EOF
 }
 
 main() {
   parse_args "$@"
+  apply_profile_defaults
   load_step_scripts
   aetherpanel_step_preflight
   aetherpanel_step_packages

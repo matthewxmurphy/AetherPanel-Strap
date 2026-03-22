@@ -1,8 +1,8 @@
 # AetherPanel-Strap
 
-Public bootstrap installer for AetherPanel by Matthew Murphy.
+Public bootstrap installer for AletherPanel by Matthew Murphy.
 
-This repo is the small public install surface for AI Control Host and Net30 Hosting. It contains only the files needed to bootstrap the node-local AetherPanel host baseline:
+This repo is the small public install surface for AI Control Host and Net30 Hosting. It contains only the files needed to bootstrap the per-server AletherPanel host baseline:
 
 - `install/` bootstrap and step scripts
 - `install/aetherpanel-host-apply.sh` repair and re-apply baseline helper
@@ -13,6 +13,7 @@ This repo is the small public install surface for AI Control Host and Net30 Host
 The main private controller and broader project code stay in the private repos.
 
 Primary domains:
+- https://aetherpanel.com
 - https://www.matthewxmurphy.com
 - https://www.net30hosting.com
 

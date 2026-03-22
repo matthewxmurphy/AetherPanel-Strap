@@ -149,7 +149,7 @@ function aetherpanel_write_json(string $path, array $payload): bool
 function aetherpanel_default_branding(): array
 {
     return [
-        'project_name' => 'AetherPanel',
+        'project_name' => 'AletherPanel',
         'business_end' => 'AI Control Host',
         'owner' => 'Matthew Murphy',
         'organization_name' => 'Net30 Hosting',
@@ -791,7 +791,7 @@ function aetherpanel_default_onboarding(): array
 {
     return [
         'title' => 'Your account setup',
-        'subtitle' => 'Finish the first fleet steps before handing real websites and customers to AetherPanel.',
+        'subtitle' => 'Finish the first fleet steps before handing real websites and customers to AletherPanel.',
         'items' => [
             [
                 'id' => 'register_controller_identity',
@@ -850,7 +850,7 @@ function aetherpanel_default_onboarding(): array
             [
                 'id' => 'import_existing_sites',
                 'title' => 'Import existing sites',
-                'summary' => 'Start bringing current website inventory and external panel state into AetherPanel.',
+                'summary' => 'Start bringing current website inventory and external panel state into AletherPanel.',
                 'done' => false,
             ],
         ],

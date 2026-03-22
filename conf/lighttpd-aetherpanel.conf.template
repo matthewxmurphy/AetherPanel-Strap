@@ -28,7 +28,7 @@ auth.backend.htpasswd.userfile = "__ETC__/users.htpasswd"
 auth.require = (
   "" => (
     "method"  => "basic",
-    "realm"   => "AetherPanel",
+    "realm"   => "AletherPanel",
     "require" => "valid-user"
   )
 )

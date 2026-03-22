@@ -151,7 +151,7 @@ if ($saveState === 'done') {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title><?= htmlspecialchars((string)($branding['project_name'] ?? 'AetherPanel')) ?></title>
+  <title><?= htmlspecialchars((string)($branding['project_name'] ?? 'AletherPanel')) ?></title>
   <link rel="stylesheet" href="<?= htmlspecialchars($assetPrefix . '/assets/aetherpanel.css') ?>">
   <style>
     :root {
@@ -172,7 +172,7 @@ if ($saveState === 'done') {
           <span><?= htmlspecialchars($compactMarkText) ?></span>
         <?php endif; ?>
       </div>
-      <nav class="ap-icon-nav" aria-label="AetherPanel sections">
+      <nav class="ap-icon-nav" aria-label="AletherPanel sections">
         <a href="#setup" title="Setup">⌘</a>
         <a href="#organization" title="Branding">◫</a>
         <a href="#access" title="Access">◎</a>
@@ -185,7 +185,7 @@ if ($saveState === 'done') {
       <div class="ap-mark">
         <div class="ap-mark-label">AI Control Host</div>
         <div class="ap-mark-title"><?= htmlspecialchars($organizationName) ?></div>
-        <div class="ap-mark-subtitle"><?= htmlspecialchars((string)($branding['project_name'] ?? 'AetherPanel')) ?></div>
+        <div class="ap-mark-subtitle"><?= htmlspecialchars((string)($branding['project_name'] ?? 'AletherPanel')) ?></div>
       </div>
       <nav class="ap-nav">
         <a href="#setup">Setup</a>
@@ -378,14 +378,14 @@ if ($saveState === 'done') {
               <div class="ap-access-index">2</div>
               <div>
                 <h3>Login and password</h3>
-                <p>Basic auth is the first credential gate before AetherPanel logic loads.</p>
+                <p>Basic auth is the first credential gate before AletherPanel logic loads.</p>
               </div>
             </div>
             <div class="ap-access-step">
               <div class="ap-access-index">3</div>
               <div>
                 <h3>User roles</h3>
-                <p>The authenticated lighttpd username maps into AetherPanel roles and permissions.</p>
+                <p>The authenticated lighttpd username maps into AletherPanel roles and permissions.</p>
               </div>
             </div>
           </div>
@@ -422,7 +422,7 @@ if ($saveState === 'done') {
           <div class="ap-local-users-grid">
             <section class="ap-user-form-card">
               <h3>Add local operator</h3>
-              <p>Create a lighttpd login and map it into AetherPanel roles on this node.</p>
+              <p>Create a lighttpd login and map it into AletherPanel roles on this node.</p>
               <form method="post" class="ap-form-stack">
                 <input type="hidden" name="action" value="create-user">
                 <div>
@@ -502,7 +502,7 @@ if ($saveState === 'done') {
           </div>
           <div class="ap-db-client">
             <div class="ap-db-client-name">Sequel Ace</div>
-            <p>Preferred operator database client from trusted machines. AetherPanel should not grow a phpMyAdmin surface.</p>
+            <p>Preferred operator database client from trusted machines. AletherPanel should not grow a phpMyAdmin surface.</p>
             <div class="ap-role-chip">No phpMyAdmin lane</div>
           </div>
         </article>

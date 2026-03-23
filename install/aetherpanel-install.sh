@@ -389,6 +389,7 @@ install_packages() {
     php-fpm
     php-mysql
     php-pgsql
+    php-sqlite3
     php-mbstring
     php-xml
     php-zip
@@ -918,12 +919,48 @@ write_lighttpd_config() {
   run_cmd "lighttpd -tt -f '$PANEL_ETC/lighttpd.conf'"
 }
 
+write_apache_ports_conf() {
+  local primary_ipv4=""
+  local primary_ipv6=""
+
+  primary_ipv4="$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}' || true)"
+  primary_ipv6="$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1); exit}}' || true)"
+
+  [ -n "$primary_ipv4" ] || fail "Could not determine the primary non-Tailscale IPv4 for Apache."
+
+  cat <<EOF >/tmp/aetherpanel-apache-ports.conf
+Listen ${primary_ipv4}:80
+<IfModule ssl_module>
+    Listen ${primary_ipv4}:443
+</IfModule>
+<IfModule mod_gnutls.c>
+    Listen ${primary_ipv4}:443
+</IfModule>
+EOF
+
+  if [ -n "$primary_ipv6" ]; then
+    cat <<EOF >>/tmp/aetherpanel-apache-ports.conf
+Listen [${primary_ipv6}]:80
+<IfModule ssl_module>
+    Listen [${primary_ipv6}]:443
+</IfModule>
+<IfModule mod_gnutls.c>
+    Listen [${primary_ipv6}]:443
+</IfModule>
+EOF
+  fi
+
+  run_cmd "install -m 0644 /tmp/aetherpanel-apache-ports.conf /etc/apache2/ports.conf"
+}
+
 enable_apache_php_baseline() {
   local php_apache_conf=""
 
   if ! has_role web; then
     return 0
   fi
+
+  write_apache_ports_conf
 
   php_apache_conf="$(find /etc/apache2/conf-available -maxdepth 1 -name 'php*-fpm.conf' 2>/dev/null | xargs -n1 basename 2>/dev/null | head -n1 | sed 's/\.conf$//' || true)"
 

@@ -1,0 +1,54 @@
+server.modules = (
+  "mod_accesslog",
+  "mod_fastcgi",
+  "mod_rewrite",
+  "mod_setenv"
+)
+
+server.username = "__PANEL_USER__"
+server.groupname = "__PANEL_GROUP__"
+server.document-root = "__DOCROOT__"
+server.bind = "__BIND_IP__"
+server.port = __PORT__
+server.pid-file = "__PANEL_VAR__/aetherpanel-lighttpd.pid"
+server.errorlog = "__LOGDIR__/error.log"
+accesslog.filename = "__LOGDIR__/access.log"
+index-file.names = ( "index.php" )
+static-file.exclude-extensions = ( ".php", ".pl", ".fcgi", ".scgi" )
+
+mimetype.assign = (
+  ".css" => "text/css",
+  ".gif" => "image/gif",
+  ".html" => "text/html",
+  ".jpg" => "image/jpeg",
+  ".jpeg" => "image/jpeg",
+  ".js" => "text/javascript",
+  ".json" => "application/json",
+  ".png" => "image/png",
+  ".svg" => "image/svg+xml",
+  ".txt" => "text/plain",
+  ".woff" => "font/woff",
+  ".woff2" => "font/woff2"
+)
+
+fastcgi.server = (
+  ".php" => (
+    "aetherpanel-php" => (
+      "socket" => "__PHP_FPM_SOCKET__",
+      "check-local" => "disable"
+    )
+  )
+)
+
+url.rewrite-if-not-file = (
+  "^/(.*)$" => "/index.php"
+)
+
+setenv.add-environment = (
+  "APP_ENV" => "production"
+)
+
+setenv.add-response-header = (
+  "X-AIetherPanel-Node" => "__NODE_NAME__",
+  "X-AIetherPanel-Gate" => "tailscale-bind"
+)

@@ -4,7 +4,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
 
-AETHERPANEL_VERSION="0.1.2"
+AETHERPANEL_VERSION="0.2.0"
 PROFILE="hybrid"
 NODE_NAME="$(hostname -s 2>/dev/null || hostname)"
 ROLES=""
@@ -14,18 +14,20 @@ PUBLIC_HOSTNAME=""
 PANEL_USER="aetherpanel"
 PANEL_GROUP="www-data"
 PANEL_PORT="80"
-PANEL_ROOT="/opt/aetherpanel"
+CONTROL_PLANE_PORT="50000"
+PANEL_ROOT="/opt/aietherpanel/controller"
 PANEL_ETC="/etc/aetherpanel"
 PANEL_VAR="/var/lib/aetherpanel"
 PANEL_LOG="/var/log/aetherpanel"
-PANEL_APP="${PANEL_ROOT}/ui"
-PANEL_WWW="${PANEL_APP}/public"
+PANEL_APP="${PANEL_ROOT}"
+PANEL_WWW="${PANEL_ROOT}/public"
 LIGHTTPD_TEMPLATE=""
 LIGHTTPD_SERVICE_TEMPLATE=""
-PANEL_UI_SOURCE=""
 TAILSCALE_IP=""
 ADMIN_USER=""
 ADMIN_PASSWORD=""
+ADMIN_NAME="Matthew Murphy"
+ADMIN_EMAIL=""
 DRY_RUN="0"
 PHP_FPM_SOCKET=""
 INSTALL_SOURCE_ROOT="${AETHERPANEL_INSTALL_SOURCE_ROOT:-https://raw.githubusercontent.com/matthewxmurphy/AIetherPanel-Strap/main}"
@@ -33,6 +35,7 @@ AETHERPANEL_SOURCE_DIR=""
 STEP_CACHE_DIR=""
 PROFILE_DESCRIPTION=""
 OPERATOR_USER="mmurphy"
+CONTROLLER_BUNDLE_TAG="${AETHERPANEL_CONTROLLER_BUNDLE_TAG:-controller-ready-stable-livewire}"
 SSH_PUB_SOURCE=""
 SSH_PUB_URL=""
 TAILSCALE_AUTHKEY=""
@@ -90,16 +93,18 @@ Options:
   -h, --help
 
 Notes:
-  - The per-server panel is bound to the Tailscale IPv4 by default.
-  - Apache stays available for websites. AIetherPanel lighttpd runs as its own dedicated service.
+  - Public bootstrap.sh is stage one: install Tailscale first so the second curl can come from the tailnet source.
+  - The controller panel is bound to the Tailscale IPv4 by default.
+  - Reserve 50000/tcp on the tailnet for controller-to-server control-plane traffic. Do not expose it publicly.
+  - Stage one is public bootstrap for Tailscale only. This stage-two installer is controller-only.
+  - Do not install Apache, mail, or website database services here until you log in and assign roles from the controller.
   - If MariaDB/Postgres is installed here, that is for websites, not panel state.
-  - Fail2ban is local. CrowdSec is handled remotely and is not installed by this script.
-  - This single script is the normal node bootstrap path.
+  - This script is the second-stage tailnet install path after bootstrap.sh.
   - The separate host-apply script is only for later re-apply/repair.
-  - If no panel login user is provided, the installer uses the operator user and generates a temporary password.
+  - If no panel login user is provided, the installer derives the login from the operator user and generates a temporary password.
   - If the controller API, join key, or external control database are not ready yet, omit those flags for now.
   - Use controller for a dedicated controller node, application for a website/application host,
-    mail-test for the future testing mail node, and hybrid for the current all-in-one baseline.
+    mail-test for the future testing mail node, and hybrid only when you intentionally want multiple roles later.
 EOF
 }
 
@@ -244,7 +249,19 @@ normalize_login_defaults() {
   fi
 
   if [ -z "$ADMIN_USER" ]; then
-    ADMIN_USER="admin"
+    ADMIN_USER="operator"
+  fi
+
+  if [ -z "$ADMIN_EMAIL" ]; then
+    if printf '%s' "$ADMIN_USER" | grep -q '@'; then
+      ADMIN_EMAIL="$ADMIN_USER"
+    else
+      ADMIN_EMAIL="${ADMIN_USER}@net30hosting.com"
+    fi
+  fi
+
+  if [ -z "$ADMIN_PASSWORD" ]; then
+    ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '\n' | cut -c1-24)"
   fi
 }
 
@@ -346,16 +363,11 @@ stage_support_file() {
 
 stage_support_tree() {
   [ -n "$STEP_CACHE_DIR" ] || STEP_CACHE_DIR="$(mktemp -d /tmp/aetherpanel-install.XXXXXX)"
-  PANEL_UI_SOURCE="$STEP_CACHE_DIR/ui"
-  LIGHTTPD_TEMPLATE="$STEP_CACHE_DIR/lighttpd-aetherpanel.conf.template"
+  LIGHTTPD_TEMPLATE="$STEP_CACHE_DIR/lighttpd-controller.conf.template"
   LIGHTTPD_SERVICE_TEMPLATE="$STEP_CACHE_DIR/aetherpanel-lighttpd.service.template"
 
-  run_cmd "install -d -m 0755 '$PANEL_UI_SOURCE/lib' '$PANEL_UI_SOURCE/public/assets'"
-  stage_support_file "conf/lighttpd-aetherpanel.conf.template" "$LIGHTTPD_TEMPLATE"
+  stage_support_file "conf/lighttpd-controller.conf.template" "$LIGHTTPD_TEMPLATE"
   stage_support_file "conf/aetherpanel-lighttpd.service.template" "$LIGHTTPD_SERVICE_TEMPLATE"
-  stage_support_file "ui/lib/bootstrap.php" "$PANEL_UI_SOURCE/lib/bootstrap.php"
-  stage_support_file "ui/public/index.php" "$PANEL_UI_SOURCE/public/index.php"
-  stage_support_file "ui/public/assets/aetherpanel.css" "$PANEL_UI_SOURCE/public/assets/aetherpanel.css"
 }
 
 install_tailscale_repo() {
@@ -375,20 +387,14 @@ install_tailscale_repo() {
 
 install_packages() {
   local packages=(
-    apache2-utils
     ca-certificates
-    certbot
     curl
-    fail2ban
     gnupg
     jq
     lighttpd
-    msmtp-mta
     php-cli
     php-curl
     php-fpm
-    php-mysql
-    php-pgsql
     php-sqlite3
     php-mbstring
     php-xml
@@ -396,17 +402,9 @@ install_packages() {
     tailscale
   )
 
-  if has_role web; then
-    packages+=(apache2)
-  fi
-
-  log "Installing host baseline packages"
+  log "Installing controller-only packages"
   run_cmd "apt-get update -y"
   run_cmd "apt-get install -y ca-certificates curl jq gnupg"
-  if command -v debconf-set-selections >/dev/null 2>&1; then
-    printf 'msmtp msmtp/apparmor boolean false\n' >/tmp/aetherpanel-debconf.seed
-    run_cmd "debconf-set-selections /tmp/aetherpanel-debconf.seed"
-  fi
   install_tailscale_repo
   run_cmd "apt-get update -y"
   run_cmd "apt-get install -y -o Dpkg::Use-Pty=0 ${packages[*]}"
@@ -476,6 +474,7 @@ JOIN_KEY=${JOIN_KEY}
 PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME}
 TAILSCALE_IP=${TAILSCALE_IP}
 PANEL_PORT=${PANEL_PORT}
+CONTROL_PLANE_PORT=${CONTROL_PLANE_PORT}
 PANEL_ROOT=${PANEL_ROOT}
 PANEL_ETC=${PANEL_ETC}
 PANEL_VAR=${PANEL_VAR}
@@ -645,7 +644,7 @@ write_onboarding_seed() {
     {
       "id": "set_default_web_stack",
       "title": "Set default web stack",
-      "summary": "Use Apache, PHP 8.5, website-local database access, Let’s Encrypt, msmtp, jailed SFTP, and Sequel Ace-friendly operator access as the baseline."
+      "summary": "After role assignment, choose the default workload stack for app nodes: Apache or OpenLiteSpeed, PHP 8.5, website-local databases, and jailed SFTP."
     },
     {
       "id": "connect_control_database",
@@ -789,32 +788,6 @@ EOF
   run_cmd "install -m 0660 -o $PANEL_USER -g $PANEL_GROUP /tmp/aetherpanel-users.json $PANEL_VAR/state/users.json"
 }
 
-write_basic_auth() {
-  local auth_file="${PANEL_ETC}/users.htpasswd"
-
-  if [ -f "$auth_file" ] && grep -q "^${ADMIN_USER}:" "$auth_file" && [ -z "$ADMIN_PASSWORD" ]; then
-    ADMIN_PASSWORD="<unchanged>"
-    chown "$PANEL_USER:$PANEL_GROUP" "$auth_file" || true
-    chmod 0660 "$auth_file" || true
-    return 0
-  fi
-
-  if [ -z "$ADMIN_PASSWORD" ]; then
-    ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '\n' | cut -c1-24)"
-  fi
-  if [ "$DRY_RUN" = "1" ]; then
-    printf '[dry-run] htpasswd -iBc %s/users.htpasswd %s\n' "$PANEL_ETC" "$ADMIN_USER"
-    return 0
-  fi
-  if [ -f "$auth_file" ]; then
-    printf '%s\n' "$ADMIN_PASSWORD" | htpasswd -iB "$auth_file" "$ADMIN_USER"
-  else
-    printf '%s\n' "$ADMIN_PASSWORD" | htpasswd -iBc "$auth_file" "$ADMIN_USER"
-  fi
-  chown "$PANEL_USER:$PANEL_GROUP" "$auth_file"
-  chmod 0660 "$auth_file"
-}
-
 detect_php_fpm_socket() {
   PHP_FPM_SOCKET="$(find /run/php -maxdepth 1 -type s -name 'php*-fpm.sock' 2>/dev/null | sort | head -n1 || true)"
   if [ -z "$PHP_FPM_SOCKET" ]; then
@@ -853,47 +826,163 @@ ensure_tailscale_connected() {
   run_cmd "tailscale up $TAILSCALE_ARGS"
 }
 
-configure_fail2ban() {
-  cat <<EOF >/tmp/aetherpanel-fail2ban.local
-[sshd]
-enabled = true
-backend = systemd
-maxretry = 5
-bantime = 1h
-findtime = 10m
-EOF
+stage_controller_bundle() {
+  local bundle_dir=""
+  local bundle_archive=""
 
-  if has_role web; then
-    cat <<'EOF' >>/tmp/aetherpanel-fail2ban.local
+  [ -n "$STEP_CACHE_DIR" ] || STEP_CACHE_DIR="$(mktemp -d /tmp/aetherpanel-install.XXXXXX)"
+  bundle_archive="$STEP_CACHE_DIR/${CONTROLLER_BUNDLE_TAG}.tar.gz"
 
-[apache-auth]
-enabled = true
-port = http,https
-logpath = /var/log/apache2/*error.log
-maxretry = 6
+  if [ -n "$AETHERPANEL_SOURCE_DIR" ]; then
+    bundle_dir="$AETHERPANEL_SOURCE_DIR/controller/dist/controller-runtime/${CONTROLLER_BUNDLE_TAG}"
+    if [ -d "$bundle_dir" ]; then
+      run_cmd "tar -C '$bundle_dir' -czf '$bundle_archive' ."
+      printf '%s\n' "$bundle_archive"
+      return 0
+    fi
 
-[apache-badbots]
-enabled = true
-port = http,https
-logpath = /var/log/apache2/*access.log
-maxretry = 2
-EOF
+    if [ -f "$AETHERPANEL_SOURCE_DIR/controller/dist/controller-runtime/${CONTROLLER_BUNDLE_TAG}.tar.gz" ]; then
+      run_cmd "install -m 0644 '$AETHERPANEL_SOURCE_DIR/controller/dist/controller-runtime/${CONTROLLER_BUNDLE_TAG}.tar.gz' '$bundle_archive'"
+      printf '%s\n' "$bundle_archive"
+      return 0
+    fi
   fi
 
-  run_cmd "install -d -m 0755 /etc/fail2ban/jail.d"
-  run_cmd "install -m 0644 /tmp/aetherpanel-fail2ban.local /etc/fail2ban/jail.d/aetherpanel.local"
+  run_cmd "curl -fsSL '${INSTALL_SOURCE_ROOT%/}/controller/dist/controller-runtime/${CONTROLLER_BUNDLE_TAG}.tar.gz' -o '$bundle_archive'"
+  printf '%s\n' "$bundle_archive"
 }
 
-sync_ui_tree() {
-  run_cmd "rm -rf '$PANEL_APP'"
-  run_cmd "install -d -m 0750 -o $PANEL_USER -g $PANEL_GROUP '$PANEL_APP'"
-  run_cmd "cp -R '$PANEL_UI_SOURCE'/. '$PANEL_APP'/"
-  run_cmd "chown -R $PANEL_USER:$PANEL_GROUP '$PANEL_APP'"
-  run_cmd "find '$PANEL_APP' -type d -exec chmod 0750 {} +"
-  run_cmd "find '$PANEL_APP' -type f -exec chmod 0640 {} +"
-  run_cmd "chmod 0750 '$PANEL_WWW'"
-  run_cmd "find '$PANEL_WWW' -type f -exec chmod 0644 {} +"
-  run_cmd "find '$PANEL_WWW' -type d -exec chmod 0755 {} +"
+write_controller_env() {
+  local db_connection="sqlite"
+  local db_database="${PANEL_ROOT}/database/database.sqlite"
+  local db_host=""
+  local db_port=""
+  local db_username=""
+  local db_password=""
+
+  if [ "$CONTROL_DB_ENABLED" = "1" ]; then
+    db_connection="$CONTROL_DB_DRIVER"
+    db_database="$CONTROL_DB_DATABASE"
+    db_host="$CONTROL_DB_HOST"
+    db_port="$CONTROL_DB_PORT"
+    db_username="$CONTROL_DB_USERNAME"
+    db_password="$CONTROL_DB_PASSWORD"
+  fi
+
+  cat <<EOF >/tmp/aetherpanel-controller.env
+APP_NAME="AIetherPanel"
+APP_ENV=production
+APP_KEY=
+APP_DEBUG=false
+APP_URL="http://${TAILSCALE_IP}"
+
+APP_LOCALE=en
+APP_FALLBACK_LOCALE=en
+APP_FAKER_LOCALE=en_US
+
+APP_MAINTENANCE_DRIVER=file
+PHP_CLI_SERVER_WORKERS=4
+
+BCRYPT_ROUNDS=12
+
+LOG_CHANNEL=stack
+LOG_STACK=single
+LOG_DEPRECATIONS_CHANNEL=null
+LOG_LEVEL=info
+
+DB_CONNECTION=${db_connection}
+DB_HOST=${db_host}
+DB_PORT=${db_port}
+DB_DATABASE=${db_database}
+DB_USERNAME=${db_username}
+DB_PASSWORD=${db_password}
+
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+SESSION_ENCRYPT=false
+SESSION_PATH=/
+SESSION_DOMAIN=null
+
+BROADCAST_CONNECTION=log
+FILESYSTEM_DISK=local
+QUEUE_CONNECTION=database
+
+CACHE_STORE=file
+CACHE_PREFIX=aietherpanel
+
+MEMCACHED_HOST=127.0.0.1
+
+REDIS_CLIENT=phpredis
+REDIS_HOST=127.0.0.1
+REDIS_PASSWORD=null
+REDIS_PORT=6379
+
+MAIL_MAILER=log
+MAIL_SCHEME=null
+MAIL_HOST=127.0.0.1
+MAIL_PORT=2525
+MAIL_USERNAME=null
+MAIL_PASSWORD=null
+MAIL_FROM_ADDRESS="hello@net30hosting.com"
+MAIL_FROM_NAME="AIetherPanel"
+
+AETHERPANEL_ADMIN_EMAIL="${ADMIN_EMAIL}"
+AETHERPANEL_ADMIN_NAME="${ADMIN_NAME}"
+AETHERPANEL_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+EOF
+  run_cmd "install -m 0640 -o $PANEL_USER -g $PANEL_GROUP /tmp/aetherpanel-controller.env '$PANEL_ROOT/.env'"
+}
+
+deploy_controller_runtime() {
+  local bundle_archive=""
+  local stage_dir="${STEP_CACHE_DIR}/controller-runtime"
+
+  bundle_archive="$(stage_controller_bundle)"
+
+  run_cmd "install -d -m 0755 '$PANEL_ROOT' '$PANEL_ROOT/database' '$PANEL_ETC'"
+  run_cmd "rm -rf '$stage_dir'"
+  run_cmd "install -d -m 0755 '$stage_dir'"
+  run_cmd "tar -xzf '$bundle_archive' -C '$stage_dir'"
+
+  if [ -f "$PANEL_ROOT/.env" ]; then
+    run_cmd "cp '$PANEL_ROOT/.env' /tmp/aetherpanel-controller.env.keep"
+  fi
+  if [ -f "$PANEL_ROOT/database/database.sqlite" ]; then
+    run_cmd "cp '$PANEL_ROOT/database/database.sqlite' /tmp/aetherpanel-controller.sqlite.keep"
+  fi
+  if [ -d "$PANEL_ROOT/storage" ]; then
+    run_cmd "rm -rf /tmp/aetherpanel-controller.storage.keep"
+    run_cmd "cp -a '$PANEL_ROOT/storage' /tmp/aetherpanel-controller.storage.keep"
+  fi
+
+  run_cmd "find '$PANEL_ROOT' -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
+  run_cmd "cp -a '$stage_dir'/. '$PANEL_ROOT/'"
+  run_cmd "find '$PANEL_ROOT' -name '._*' -delete"
+
+  if [ -f /tmp/aetherpanel-controller.env.keep ]; then
+    run_cmd "mv /tmp/aetherpanel-controller.env.keep '$PANEL_ROOT/.env'"
+  else
+    write_controller_env
+  fi
+
+  if [ -f /tmp/aetherpanel-controller.sqlite.keep ]; then
+    run_cmd "mv /tmp/aetherpanel-controller.sqlite.keep '$PANEL_ROOT/database/database.sqlite'"
+  fi
+
+  if [ -d /tmp/aetherpanel-controller.storage.keep ]; then
+    run_cmd "rm -rf '$PANEL_ROOT/storage'"
+    run_cmd "mv /tmp/aetherpanel-controller.storage.keep '$PANEL_ROOT/storage'"
+  fi
+
+  run_cmd "install -d -m 0775 '$PANEL_ROOT/storage/app/private' '$PANEL_ROOT/storage/framework/cache' '$PANEL_ROOT/storage/framework/sessions' '$PANEL_ROOT/storage/framework/testing' '$PANEL_ROOT/storage/framework/views' '$PANEL_ROOT/storage/logs' '$PANEL_ROOT/bootstrap/cache'"
+  if [ ! -f "$PANEL_ROOT/database/database.sqlite" ]; then
+    run_cmd "sudo -u '$PANEL_USER' touch '$PANEL_ROOT/database/database.sqlite'"
+  fi
+  run_cmd "chown -R $PANEL_USER:$PANEL_GROUP '$PANEL_ROOT'"
+  run_cmd "chmod -R g+w '$PANEL_ROOT/storage' '$PANEL_ROOT/bootstrap/cache'"
+  run_cmd "cd '$PANEL_ROOT' && sudo -u '$PANEL_USER' php artisan key:generate --force"
+  run_cmd "cd '$PANEL_ROOT' && sudo -u '$PANEL_USER' php artisan migrate --force --seed"
+  run_cmd "cd '$PANEL_ROOT' && sudo -u '$PANEL_USER' php artisan storage:link || true"
 }
 
 write_lighttpd_config() {
@@ -919,67 +1008,12 @@ write_lighttpd_config() {
   run_cmd "lighttpd -tt -f '$PANEL_ETC/lighttpd.conf'"
 }
 
-write_apache_ports_conf() {
-  local primary_ipv4=""
-  local primary_ipv6=""
-
-  primary_ipv4="$(ip -4 -o route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}' || true)"
-  primary_ipv6="$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"src\"){print $(i+1); exit}}' || true)"
-
-  [ -n "$primary_ipv4" ] || fail "Could not determine the primary non-Tailscale IPv4 for Apache."
-
-  cat <<EOF >/tmp/aetherpanel-apache-ports.conf
-Listen ${primary_ipv4}:80
-<IfModule ssl_module>
-    Listen ${primary_ipv4}:443
-</IfModule>
-<IfModule mod_gnutls.c>
-    Listen ${primary_ipv4}:443
-</IfModule>
-EOF
-
-  if [ -n "$primary_ipv6" ]; then
-    cat <<EOF >>/tmp/aetherpanel-apache-ports.conf
-Listen [${primary_ipv6}]:80
-<IfModule ssl_module>
-    Listen [${primary_ipv6}]:443
-</IfModule>
-<IfModule mod_gnutls.c>
-    Listen [${primary_ipv6}]:443
-</IfModule>
-EOF
-  fi
-
-  run_cmd "install -m 0644 /tmp/aetherpanel-apache-ports.conf /etc/apache2/ports.conf"
-}
-
-enable_apache_php_baseline() {
-  local php_apache_conf=""
-
-  if ! has_role web; then
-    return 0
-  fi
-
-  write_apache_ports_conf
-
-  php_apache_conf="$(find /etc/apache2/conf-available -maxdepth 1 -name 'php*-fpm.conf' 2>/dev/null | xargs -n1 basename 2>/dev/null | head -n1 | sed 's/\.conf$//' || true)"
-
-  run_cmd "a2enmod proxy_fcgi setenvif ssl rewrite"
-  if [ -n "$php_apache_conf" ]; then
-    run_cmd "a2enconf '$php_apache_conf'"
-  fi
-  run_cmd "apache2ctl configtest"
-}
-
 enable_services() {
   run_cmd "systemctl disable --now lighttpd || true"
   run_cmd "systemctl daemon-reload"
   run_cmd "systemctl enable --now aetherpanel-lighttpd"
-  if has_role web; then
-    enable_apache_php_baseline
-    run_cmd "systemctl enable --now apache2"
-  fi
-  run_cmd "systemctl enable --now fail2ban"
+  run_cmd "systemctl restart php$(php -r 'echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;')-fpm || systemctl restart php8.3-fpm"
+  run_cmd "systemctl restart aetherpanel-lighttpd"
 }
 
 record_host_facts() {
@@ -1070,11 +1104,12 @@ Node:          ${NODE_NAME}
 Profile:       ${PROFILE}
 Roles:         ${ROLES}
 Tailnet bind:  ${panel_bind_label}
+Control lane:  ${TAILSCALE_IP}:${CONTROL_PLANE_PORT} (tailnet only, reserved)
 Controller:    ${controller_label}
 Controller API:${controller_api_label}
 Join mode:     ${join_mode_label}
-Admin user:    ${ADMIN_USER}
-Admin pass:    ${ADMIN_PASSWORD}
+Login email:   ${ADMIN_EMAIL}
+Login pass:    ${ADMIN_PASSWORD}
 
 Branding seed:  ${PANEL_VAR}/state/branding.json
 Control DB:     ${PANEL_VAR}/state/control-db.json
@@ -1083,9 +1118,9 @@ Role seed:      ${PANEL_VAR}/state/users.toon
 Node config:    ${PANEL_ETC}/node.env
 
 Remember:
-- lighttpd is the dedicated per-server AIetherPanel service on this host
-- Apache only installs when the profile carries the web role
-- Fail2ban is local. CrowdSec stays remote-managed.
+- lighttpd is the dedicated Tailscale-only AIetherPanel controller service on this host
+- 50000/tcp is reserved for controller-to-server traffic over Tailscale only
+- Apache, OpenLiteSpeed, mail, website databases, and other workload services wait until you log in and assign roles
 - host MariaDB/Postgres is for websites, not panel state
 
 ${PROFILE_DESCRIPTION}
